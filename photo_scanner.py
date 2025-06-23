@@ -292,7 +292,7 @@ def main():
     print(f"Loaded {len(location_cache)} entries from cache.")
     
     # Path to directory with photos (can be changed as needed)
-    photos_directory = "c:/temp/"
+    photos_directory = "d:/My_foto2/"
     
     # Check directory existence
     if not os.path.exists(photos_directory):

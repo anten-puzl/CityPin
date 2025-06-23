@@ -1,3 +1,4 @@
 *.csv
 bash.exe.stackdump
 location_cache.json
+/Map.pbix
