@@ -1,1 +1,3 @@
 *.csv
+bash.exe.stackdump
+location_cache.json

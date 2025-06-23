@@ -6,44 +6,113 @@ from PIL.ExifTags import TAGS, GPSTAGS
 import requests
 import time
 from urllib.parse import quote
+import json
+import math
 
-# Глобальный словарь для кеширования результатов запросов по координатам
+# Global dictionary for caching coordinate query results
 location_cache = {}
 
-# Функция для преобразования GPS координат из формата EXIF в десятичные градусы
+# Function to load cache from file
+def load_cache_from_file():
+    """Loads coordinate cache from file"""
+    cache_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'location_cache.json')
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                # Load cache from file
+                cache_data = json.load(f)
+                # Convert keys back to strings (they were saved as strings)
+                return cache_data
+        except Exception as e:
+            print(f"Error loading cache from file: {e}")
+    return {}
+
+# Function to save cache to file
+def save_cache_to_file(cache):
+    """Saves coordinate cache to file"""
+    cache_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'location_cache.json')
+    try:
+        with open(cache_file, 'w', encoding='utf-8') as f:
+            # Save cache to file in JSON format
+            json.dump(cache, f, ensure_ascii=False, indent=2)
+        print(f"Cache saved to file: {cache_file}")
+    except Exception as e:
+        print(f"Error saving cache to file: {e}")
+
+# Function to check if coordinates are close
+def are_coordinates_close(lat1, lon1, lat2, lon2, threshold=0.01):
+    """Checks if coordinates are close enough to each other"""
+    # Check if the difference between coordinates is less than the threshold
+    # 0.01 degrees is approximately 1 km at the equator
+    return abs(lat1 - lat2) < threshold and abs(lon1 - lon2) < threshold
+
+# Function to find close coordinates in cache
+def find_in_cache(latitude, longitude):
+    """Searches for close coordinates in cache"""
+    if latitude is None or longitude is None:
+        return None
+    
+    # Round coordinates to 6 decimal places for comparison
+    lat_rounded = round(latitude, 6)
+    lon_rounded = round(longitude, 6)
+    
+    # Check for exact match
+    cache_key = f"{lat_rounded},{lon_rounded}"
+    if cache_key in location_cache:
+        print(f"Using cached data for coordinates: {cache_key}")
+        return location_cache[cache_key]
+    
+    # If no exact match, look for close coordinates
+    for key in location_cache.keys():
+        try:
+            # Split key into coordinates
+            cached_lat, cached_lon = map(float, key.split(','))
+            
+            # Check if coordinates are close enough
+            if are_coordinates_close(lat_rounded, lon_rounded, cached_lat, cached_lon):
+                print(f"Using cached data for close coordinates: {key} (requested: {lat_rounded},{lon_rounded})")
+                return location_cache[key]
+        except Exception as e:
+            # Skip invalid keys
+            continue
+    
+    # If nothing found
+    return None
+
+# Function to convert GPS coordinates from EXIF format to decimal degrees
 def convert_to_degrees(value):
-    """Преобразует GPS координаты из формата EXIF в десятичные градусы"""
+    """Converts GPS coordinates from EXIF format to decimal degrees"""
     d = float(value[0])
     m = float(value[1])
     s = float(value[2])
     return d + (m / 60.0) + (s / 3600.0)
 
-# Функция для получения GPS координат из EXIF данных
+# Function to get GPS coordinates from EXIF data
 def get_gps_info(exif_data):
-    """Извлекает GPS информацию из EXIF данных"""
+    """Extracts GPS information from EXIF data"""
     if not exif_data:
         return None
     
     gps_info = {}
     
-    # Ищем GPS данные в EXIF
+    # Look for GPS data in EXIF
     for key, value in exif_data.items():
         tag_name = TAGS.get(key, key)
         if tag_name == 'GPSInfo':
-            # Обрабатываем GPS данные
+            # Process GPS data
             for gps_key in value:
                 sub_tag_name = GPSTAGS.get(gps_key, gps_key)
                 gps_info[sub_tag_name] = value[gps_key]
     
-    # Проверяем наличие необходимых GPS данных
+    # Check for necessary GPS data
     if 'GPSLatitude' in gps_info and 'GPSLongitude' in gps_info:
         lat = convert_to_degrees(gps_info['GPSLatitude'])
-        # Учитываем направление (N/S)
+        # Consider direction (N/S)
         if gps_info.get('GPSLatitudeRef', 'N') == 'S':
             lat = -lat
             
         lon = convert_to_degrees(gps_info['GPSLongitude'])
-        # Учитываем направление (E/W)
+        # Consider direction (E/W)
         if gps_info.get('GPSLongitudeRef', 'E') == 'W':
             lon = -lon
             
@@ -51,42 +120,41 @@ def get_gps_info(exif_data):
     
     return None
 
-# Функция для определения города по GPS координатам
+# Function to determine city by GPS coordinates
 def get_location_info(latitude, longitude):
-    """Получает информацию о местоположении по GPS координатам используя Nominatim API с кешированием"""
+    """Gets location information by GPS coordinates using Nominatim API with caching"""
     if latitude is None or longitude is None:
         return None
     
-    # Округляем координаты до 6 знаков после запятой для кеширования
-    # (это примерно 10 см точности, что более чем достаточно для определения города)
+    # Look for close coordinates in cache
+    cached_result = find_in_cache(latitude, longitude)
+    if cached_result:
+        return cached_result
+    
+    # Round coordinates to 6 decimal places for caching
     lat_rounded = round(latitude, 6)
     lon_rounded = round(longitude, 6)
     
-    # Создаем ключ для кеша
+    # Create cache key
     cache_key = f"{lat_rounded},{lon_rounded}"
     
-    # Проверяем, есть ли результат в кеше
-    if cache_key in location_cache:
-        print(f"Используем кешированные данные для координат: {cache_key}")
-        return location_cache[cache_key]
-    
-    # Формируем URL для запроса к Nominatim API
+    # Form URL for Nominatim API request
     url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={latitude}&lon={longitude}&zoom=10&addressdetails=1"
     
-    # Добавляем User-Agent в заголовки (требование Nominatim API)
+    # Add User-Agent to headers (Nominatim API requirement)
     headers = {
         'User-Agent': 'CityPin/1.0 (https://github.com/yourusername/citypin)'
     }
     
     try:
-        # Отправляем запрос
+        # Send request
         response = requests.get(url, headers=headers)
         
-        # Проверяем успешность запроса
+        # Check request success
         if response.status_code == 200:
             data = response.json()
             
-            # Извлекаем информацию о местоположении
+            # Extract location information
             location_info = {
                 'city': None,
                 'state': None,
@@ -94,56 +162,56 @@ def get_location_info(latitude, longitude):
                 'display_name': data.get('display_name')
             }
             
-            # Получаем детальную информацию об адресе
+            # Get detailed address information
             address = data.get('address', {})
             
-            # Пытаемся получить город (может быть в разных полях)
+            # Try to get city (may be in different fields)
             location_info['city'] = address.get('city') or address.get('town') or \
                                    address.get('village') or address.get('hamlet') or \
                                    address.get('municipality')
             
-            # Получаем регион/штат
+            # Get region/state
             location_info['state'] = address.get('state') or address.get('region') or \
                                     address.get('province') or address.get('county')
             
-            # Получаем страну
+            # Get country
             location_info['country'] = address.get('country')
             
-            # Сохраняем результат в кеш
+            # Save result to cache
             location_cache[cache_key] = location_info
             
             return location_info
         else:
-            print(f"Ошибка при запросе к Nominatim API: {response.status_code}")
+            print(f"Error in Nominatim API request: {response.status_code}")
             return None
     except Exception as e:
-        print(f"Ошибка при определении местоположения: {e}")
+        print(f"Error determining location: {e}")
         return None
 
-# Функция для сканирования каталога с фотографиями
+# Function to scan directory with photos
 def scan_photos_directory(directory):
-    """Сканирует указанный каталог и извлекает GPS координаты из фотографий"""
-    # Поддерживаемые форматы изображений
+    """Scans specified directory and extracts GPS coordinates from photos"""
+    # Supported image formats
     supported_formats = ('.jpg', '.jpeg', '.tiff', '.png')
     
-    # Создаем список для хранения данных
+    # Create list to store data
     photo_data = []
     
-    # Рекурсивно обходим все файлы в указанном каталоге
+    # Recursively traverse all files in specified directory
     for root, _, files in os.walk(directory):
         for file in files:
             if file.lower().endswith(supported_formats):
                 file_path = os.path.join(root, file)
                 try:
-                    # Открываем изображение
+                    # Open image
                     with Image.open(file_path) as img:
-                        # Получаем EXIF данные
+                        # Get EXIF data
                         exif_data = img._getexif()
                         
-                        # Извлекаем GPS информацию
+                        # Extract GPS information
                         gps_info = get_gps_info(exif_data)
                         
-                        # Если GPS информация найдена, добавляем в список
+                        # If GPS information found, add to list
                         if gps_info:
                             photo_data.append({
                                 'file_path': file_path,
@@ -151,112 +219,116 @@ def scan_photos_directory(directory):
                                 'longitude': gps_info['longitude']
                             })
                         else:
-                            # Если GPS информация не найдена, добавляем запись без координат
+                            # If GPS information not found, add entry without coordinates
                             photo_data.append({
                                 'file_path': file_path,
                                 'latitude': None,
                                 'longitude': None
                             })
                 except Exception as e:
-                    print(f"Ошибка при обработке файла {file_path}: {e}")
+                    print(f"Error processing file {file_path}: {e}")
     
-    # Создаем DataFrame из собранных данных
+    # Create DataFrame from collected data
     df = pd.DataFrame(photo_data)
     return df
 
-# Функция для добавления информации о местоположении к данным фотографий
+# Function to add location information to photo data
 def add_location_info(photos_df):
-    """Добавляет информацию о местоположении к DataFrame с данными фотографий"""
-    # Добавляем новые столбцы для информации о местоположении
+    """Adds location information to DataFrame with photo data"""
+    # Add new columns for location information
     photos_df['city'] = None
     photos_df['state'] = None
     photos_df['country'] = None
     photos_df['display_name'] = None
     
-    # Счетчик обработанных фотографий с координатами
+    # Counter for processed photos with coordinates
     processed_count = 0
     total_with_coords = photos_df['latitude'].notna().sum()
     
-    # Обрабатываем каждую строку с координатами
+    # Process each row with coordinates
     for index, row in photos_df[photos_df['latitude'].notna()].iterrows():
         processed_count += 1
-        print(f"Определение местоположения для фото {processed_count}/{total_with_coords}: {row['file_path']}")
+        print(f"Determining location for photo {processed_count}/{total_with_coords}: {row['file_path']}")
         
-        # Получаем информацию о местоположении
+        # Get location information
         location_info = get_location_info(row['latitude'], row['longitude'])
         
-        # Если информация получена, добавляем ее в DataFrame
+        # If information obtained, add it to DataFrame
         if location_info:
             photos_df.at[index, 'city'] = location_info['city']
             photos_df.at[index, 'state'] = location_info['state']
             photos_df.at[index, 'country'] = location_info['country']
             photos_df.at[index, 'display_name'] = location_info['display_name']
         
-        # Делаем паузу между запросами, чтобы не превышать лимит Nominatim API
-        # Если данные были получены из кеша, пауза не нужна
-        cache_key = f"{round(row['latitude'], 6)},{round(row['longitude'], 6)}"
-        if cache_key not in location_cache or len(location_cache) <= 1:
+        # Pause between requests to not exceed Nominatim API limit
+        # If data was retrieved from cache, no pause needed
+        if not find_in_cache(row['latitude'], row['longitude']):
             time.sleep(1)
     
     return photos_df
 
-# Функция для создания списка уникальных городов
+# Function to create list of unique cities
 def create_unique_locations_list(photos_df):
-    """Создает список уникальных местоположений без дублей"""
-    # Создаем DataFrame только с информацией о местоположении (без путей к файлам и координат)
+    """Creates list of unique locations without duplicates"""
+    # Create DataFrame with only location information (without file paths and coordinates)
     locations_df = photos_df[['city', 'state', 'country']].copy()
     
-    # Удаляем строки, где город не определен
+    # Remove rows where city is not defined
     locations_df = locations_df.dropna(subset=['city'])
     
-    # Удаляем дубликаты
+    # Remove duplicates
     unique_locations_df = locations_df.drop_duplicates()
     
-    # Сортируем по стране и городу
+    # Sort by country and city
     unique_locations_df = unique_locations_df.sort_values(by=['country', 'state', 'city'])
     
     return unique_locations_df
 
-# Основная функция программы
+# Main program function
 def main():
-    # Путь к каталогу с фотографиями (можно изменить на нужный)
+    # Load cache from file at program start
+    global location_cache
+    location_cache = load_cache_from_file()
+    print(f"Loaded {len(location_cache)} entries from cache.")
+    
+    # Path to directory with photos (can be changed as needed)
     photos_directory = "c:/temp/"
     
-    # Проверяем существование каталога
+    # Check directory existence
     if not os.path.exists(photos_directory):
-        print(f"Каталог {photos_directory} не существует!")
+        print(f"Directory {photos_directory} does not exist!")
         return
     
-    print(f"Сканирование каталога {photos_directory}...")
+    print(f"Scanning directory {photos_directory}...")
     
-    # Сканируем каталог и получаем данные
+    # Scan directory and get data
     photos_df = scan_photos_directory(photos_directory)
     
-    # Выводим результаты сканирования
-    print(f"Найдено {len(photos_df)} фотографий.")
-    print(f"Из них {photos_df['latitude'].notna().sum()} с GPS координатами.")
+    # Display scanning results
+    print(f"Found {len(photos_df)} photos.")
+    print(f"Of these, {photos_df['latitude'].notna().sum()} have GPS coordinates.")
     
-    # Если есть фотографии с координатами, определяем местоположение
+    # If there are photos with coordinates, determine location
     if photos_df['latitude'].notna().sum() > 0:
-        print("\nОпределение местоположения по GPS координатам...")
+        print("\nDetermining location by GPS coordinates...")
         photos_df = add_location_info(photos_df)
         
-        # Выводим статистику по городам
+        # Display statistics by cities
         cities = photos_df['city'].dropna().value_counts()
-        print("\nНайденные города:")
+        print("\nCities found:")
         for city, count in cities.items():
-            print(f"{city}: {count} фото")
+            print(f"{city}: {count} photos")
         
-        # Создаем список уникальных местоположений
+        # Create list of unique locations
         unique_locations = create_unique_locations_list(photos_df)
         
-        # Сохраняем список уникальных местоположений в CSV файл
+        # Save list of unique locations to CSV file
         unique_locations_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'unique_locations.csv')
         unique_locations.to_csv(unique_locations_file, index=False, encoding='utf-8')
-        print(f"\nСписок уникальных местоположений сохранен в файл: {unique_locations_file}")
+        print(f"\nList of unique locations saved to file: {unique_locations_file}")
         
-        # Выводим список уникальных местоположений
-        print("\nСписок уникальных местоположений:")
+        # Display list of unique locations
+        print("\nList of unique locations:")
         for _, row in unique_locations.iterrows():
             location_str = f"{row['city']}"
             if row['state']:
@@ -265,18 +337,21 @@ def main():
                 location_str += f", {row['country']}"
             print(location_str)
         
-        # Выводим статистику по кешу
-        print(f"\nСтатистика кеширования:")
-        print(f"Всего уникальных координат в кеше: {len(location_cache)}")
+        # Display cache statistics
+        print(f"\nCaching statistics:")
+        print(f"Total unique coordinates in cache: {len(location_cache)}")
     
-    # Сохраняем результаты в CSV файл
+    # Save results to CSV file
     output_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'photos_gps_data.csv')
     photos_df.to_csv(output_file, index=False, encoding='utf-8')
-    print(f"\nДанные сохранены в файл: {output_file}")
+    print(f"\nData saved to file: {output_file}")
     
-    # Выводим первые несколько строк таблицы
-    print("\nПример данных:")
+    # Display first few rows of the table
+    print("\nData example:")
     print(photos_df.head())
+    
+    # Save cache to file when program ends
+    save_cache_to_file(location_cache)
 
 if __name__ == "__main__":
     main()
