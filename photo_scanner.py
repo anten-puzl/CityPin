@@ -7,6 +7,9 @@ import requests
 import time
 from urllib.parse import quote
 
+# Глобальный словарь для кеширования результатов запросов по координатам
+location_cache = {}
+
 # Функция для преобразования GPS координат из формата EXIF в десятичные градусы
 def convert_to_degrees(value):
     """Преобразует GPS координаты из формата EXIF в десятичные градусы"""
@@ -50,9 +53,22 @@ def get_gps_info(exif_data):
 
 # Функция для определения города по GPS координатам
 def get_location_info(latitude, longitude):
-    """Получает информацию о местоположении по GPS координатам используя Nominatim API"""
+    """Получает информацию о местоположении по GPS координатам используя Nominatim API с кешированием"""
     if latitude is None or longitude is None:
         return None
+    
+    # Округляем координаты до 6 знаков после запятой для кеширования
+    # (это примерно 10 см точности, что более чем достаточно для определения города)
+    lat_rounded = round(latitude, 6)
+    lon_rounded = round(longitude, 6)
+    
+    # Создаем ключ для кеша
+    cache_key = f"{lat_rounded},{lon_rounded}"
+    
+    # Проверяем, есть ли результат в кеше
+    if cache_key in location_cache:
+        print(f"Используем кешированные данные для координат: {cache_key}")
+        return location_cache[cache_key]
     
     # Формируем URL для запроса к Nominatim API
     url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={latitude}&lon={longitude}&zoom=10&addressdetails=1"
@@ -92,6 +108,9 @@ def get_location_info(latitude, longitude):
             
             # Получаем страну
             location_info['country'] = address.get('country')
+            
+            # Сохраняем результат в кеш
+            location_cache[cache_key] = location_info
             
             return location_info
         else:
@@ -174,9 +193,29 @@ def add_location_info(photos_df):
             photos_df.at[index, 'display_name'] = location_info['display_name']
         
         # Делаем паузу между запросами, чтобы не превышать лимит Nominatim API
-        time.sleep(1)
+        # Если данные были получены из кеша, пауза не нужна
+        cache_key = f"{round(row['latitude'], 6)},{round(row['longitude'], 6)}"
+        if cache_key not in location_cache or len(location_cache) <= 1:
+            time.sleep(1)
     
     return photos_df
+
+# Функция для создания списка уникальных городов
+def create_unique_locations_list(photos_df):
+    """Создает список уникальных местоположений без дублей"""
+    # Создаем DataFrame только с информацией о местоположении (без путей к файлам и координат)
+    locations_df = photos_df[['city', 'state', 'country']].copy()
+    
+    # Удаляем строки, где город не определен
+    locations_df = locations_df.dropna(subset=['city'])
+    
+    # Удаляем дубликаты
+    unique_locations_df = locations_df.drop_duplicates()
+    
+    # Сортируем по стране и городу
+    unique_locations_df = unique_locations_df.sort_values(by=['country', 'state', 'city'])
+    
+    return unique_locations_df
 
 # Основная функция программы
 def main():
@@ -207,6 +246,28 @@ def main():
         print("\nНайденные города:")
         for city, count in cities.items():
             print(f"{city}: {count} фото")
+        
+        # Создаем список уникальных местоположений
+        unique_locations = create_unique_locations_list(photos_df)
+        
+        # Сохраняем список уникальных местоположений в CSV файл
+        unique_locations_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'unique_locations.csv')
+        unique_locations.to_csv(unique_locations_file, index=False, encoding='utf-8')
+        print(f"\nСписок уникальных местоположений сохранен в файл: {unique_locations_file}")
+        
+        # Выводим список уникальных местоположений
+        print("\nСписок уникальных местоположений:")
+        for _, row in unique_locations.iterrows():
+            location_str = f"{row['city']}"
+            if row['state']:
+                location_str += f", {row['state']}"
+            if row['country']:
+                location_str += f", {row['country']}"
+            print(location_str)
+        
+        # Выводим статистику по кешу
+        print(f"\nСтатистика кеширования:")
+        print(f"Всего уникальных координат в кеше: {len(location_cache)}")
     
     # Сохраняем результаты в CSV файл
     output_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'photos_gps_data.csv')
