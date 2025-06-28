@@ -13,9 +13,10 @@ import math
 location_cache = {}
 
 # Function to load cache from file
-def load_cache_from_file():
+def load_cache_from_file(photos_directory=None):
     """Loads coordinate cache from file"""
     cache_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'location_cache.json')
+    
     if os.path.exists(cache_file):
         try:
             with open(cache_file, 'r', encoding='utf-8') as f:
@@ -28,9 +29,10 @@ def load_cache_from_file():
     return {}
 
 # Function to save cache to file
-def save_cache_to_file(cache):
+def save_cache_to_file(cache, photos_directory=None):
     """Saves coordinate cache to file"""
     cache_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'location_cache.json')
+    
     try:
         with open(cache_file, 'w', encoding='utf-8') as f:
             # Save cache to file in JSON format
@@ -286,18 +288,18 @@ def create_unique_locations_list(photos_df):
 
 # Main program function
 def main():
-    # Load cache from file at program start
-    global location_cache
-    location_cache = load_cache_from_file()
-    print(f"Loaded {len(location_cache)} entries from cache.")
-    
     # Path to directory with photos (can be changed as needed)
-    photos_directory = "d:/My_foto2/"
+    photos_directory = "d:/My_foto/"
     
     # Check directory existence
     if not os.path.exists(photos_directory):
         print(f"Directory {photos_directory} does not exist!")
         return
+    
+    # Load cache from file at program start
+    global location_cache
+    location_cache = load_cache_from_file()
+    print(f"Loaded {len(location_cache)} entries from cache.")
     
     print(f"Scanning directory {photos_directory}...")
     
@@ -323,7 +325,7 @@ def main():
         unique_locations = create_unique_locations_list(photos_df)
         
         # Save list of unique locations to CSV file
-        unique_locations_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'unique_locations.csv')
+        unique_locations_file = os.path.join(photos_directory, 'unique_locations.csv')
         unique_locations.to_csv(unique_locations_file, index=False, encoding='utf-8')
         print(f"\nList of unique locations saved to file: {unique_locations_file}")
         
@@ -342,7 +344,7 @@ def main():
         print(f"Total unique coordinates in cache: {len(location_cache)}")
     
     # Save results to CSV file
-    output_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'photos_gps_data.csv')
+    output_file = os.path.join(photos_directory, 'photos_gps_data.csv')
     photos_df.to_csv(output_file, index=False, encoding='utf-8')
     print(f"\nData saved to file: {output_file}")
     
