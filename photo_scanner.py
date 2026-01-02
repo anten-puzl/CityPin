@@ -61,7 +61,6 @@ def find_in_cache(latitude, longitude):
     # Check for exact match
     cache_key = f"{lat_rounded},{lon_rounded}"
     if cache_key in location_cache:
-        print(f"Using cached data for coordinates: {cache_key}")
         return location_cache[cache_key]
     
     # If no exact match, look for close coordinates
@@ -72,7 +71,6 @@ def find_in_cache(latitude, longitude):
             
             # Check if coordinates are close enough
             if are_coordinates_close(lat_rounded, lon_rounded, cached_lat, cached_lon):
-                print(f"Using cached data for close coordinates: {key} (requested: {lat_rounded},{lon_rounded})")
                 return location_cache[key]
         except Exception as e:
             # Skip invalid keys
@@ -84,10 +82,13 @@ def find_in_cache(latitude, longitude):
 # Function to convert GPS coordinates from EXIF format to decimal degrees
 def convert_to_degrees(value):
     """Converts GPS coordinates from EXIF format to decimal degrees"""
-    d = float(value[0])
-    m = float(value[1])
-    s = float(value[2])
-    return d + (m / 60.0) + (s / 3600.0)
+    try:
+        d = float(value[0])
+        m = float(value[1])
+        s = float(value[2])
+        return d + (m / 60.0) + (s / 3600.0)
+    except (ValueError, ZeroDivisionError, TypeError, IndexError):
+        return None
 
 # Function to get GPS coordinates from EXIF data
 def get_gps_info(exif_data):
@@ -109,11 +110,15 @@ def get_gps_info(exif_data):
     # Check for necessary GPS data
     if 'GPSLatitude' in gps_info and 'GPSLongitude' in gps_info:
         lat = convert_to_degrees(gps_info['GPSLatitude'])
+        lon = convert_to_degrees(gps_info['GPSLongitude'])
+        
+        if lat is None or lon is None:
+            return None
+
         # Consider direction (N/S)
         if gps_info.get('GPSLatitudeRef', 'N') == 'S':
             lat = -lat
             
-        lon = convert_to_degrees(gps_info['GPSLongitude'])
         # Consider direction (E/W)
         if gps_info.get('GPSLongitudeRef', 'E') == 'W':
             lon = -lon
@@ -210,6 +215,15 @@ def scan_photos_directory(directory):
                         # Get EXIF data
                         exif_data = img._getexif()
                         
+                        # Extract date taken
+                        date_taken = None
+                        if exif_data:
+                            # 36867 is DateTimeOriginal
+                            date_taken = exif_data.get(36867)
+                            # If DateTimeOriginal not found, try DateTime (306)
+                            if not date_taken:
+                                date_taken = exif_data.get(306)
+
                         # Extract GPS information
                         gps_info = get_gps_info(exif_data)
                         
@@ -217,6 +231,7 @@ def scan_photos_directory(directory):
                         if gps_info:
                             photo_data.append({
                                 'file_path': file_path,
+                                'date_taken': date_taken,
                                 'latitude': gps_info['latitude'],
                                 'longitude': gps_info['longitude']
                             })
@@ -224,6 +239,7 @@ def scan_photos_directory(directory):
                             # If GPS information not found, add entry without coordinates
                             photo_data.append({
                                 'file_path': file_path,
+                                'date_taken': date_taken,
                                 'latitude': None,
                                 'longitude': None
                             })
@@ -250,7 +266,6 @@ def add_location_info(photos_df):
     # Process each row with coordinates
     for index, row in photos_df[photos_df['latitude'].notna()].iterrows():
         processed_count += 1
-        print(f"Determining location for photo {processed_count}/{total_with_coords}: {row['file_path']}")
         
         # Get location information
         location_info = get_location_info(row['latitude'], row['longitude'])
@@ -265,6 +280,7 @@ def add_location_info(photos_df):
         # Pause between requests to not exceed Nominatim API limit
         # If data was retrieved from cache, no pause needed
         if not find_in_cache(row['latitude'], row['longitude']):
+            print(f"Determining location for photo {processed_count}/{total_with_coords}: {row['file_path']}")
             time.sleep(1)
     
     return photos_df
@@ -289,7 +305,7 @@ def create_unique_locations_list(photos_df):
 # Main program function
 def main():
     # Path to directory with photos (can be changed as needed)
-    photos_directory = "d:/My_foto/"
+    photos_directory = "d:/my_foto2"
     
     # Check directory existence
     if not os.path.exists(photos_directory):
@@ -301,6 +317,17 @@ def main():
     location_cache = load_cache_from_file()
     print(f"Loaded {len(location_cache)} entries from cache.")
     
+    # Check for previously processed files
+    output_file = os.path.join(photos_directory, 'photos_gps_data.csv')
+    previous_files = set()
+    if os.path.exists(output_file):
+        try:
+            # Read only file_path column
+            df_old = pd.read_csv(output_file, usecols=['file_path'])
+            previous_files = set(df_old['file_path'].astype(str))
+        except Exception as e:
+            print(f"Warning: Could not read previous results: {e}")
+
     print(f"Scanning directory {photos_directory}...")
     
     # Scan directory and get data
@@ -308,6 +335,12 @@ def main():
     
     # Display scanning results
     print(f"Found {len(photos_df)} photos.")
+    
+    # Calculate new photos
+    current_files = set(photos_df['file_path'].astype(str))
+    new_files_count = len(current_files - previous_files)
+    print(f"New photos found: {new_files_count}")
+
     print(f"Of these, {photos_df['latitude'].notna().sum()} have GPS coordinates.")
     
     # If there are photos with coordinates, determine location
@@ -347,11 +380,7 @@ def main():
     output_file = os.path.join(photos_directory, 'photos_gps_data.csv')
     photos_df.to_csv(output_file, index=False, encoding='utf-8')
     print(f"\nData saved to file: {output_file}")
-    
-    # Display first few rows of the table
-    print("\nData example:")
-    print(photos_df.head())
-    
+ 
     # Save cache to file when program ends
     save_cache_to_file(location_cache)
 
