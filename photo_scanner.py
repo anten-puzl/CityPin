@@ -72,7 +72,7 @@ def find_in_cache(latitude, longitude):
             # Check if coordinates are close enough
             if are_coordinates_close(lat_rounded, lon_rounded, cached_lat, cached_lon):
                 return location_cache[key]
-        except Exception as e:
+        except Exception:
             # Skip invalid keys
             continue
     
@@ -305,20 +305,23 @@ def create_unique_locations_list(photos_df):
 # Main program function
 def main():
     # Path to directory with photos (can be changed as needed)
-    photos_directory = "d:/my_foto2"
-    
+    photos_directory = "d:/my_foto2/2026"
+
+    # Path to directory for saving results
+    results_directory = "d:/my_foto2"
+
     # Check directory existence
     if not os.path.exists(photos_directory):
         print(f"Directory {photos_directory} does not exist!")
         return
-    
+
     # Load cache from file at program start
     global location_cache
     location_cache = load_cache_from_file()
     print(f"Loaded {len(location_cache)} entries from cache.")
-    
+
     # Check for previously processed files
-    output_file = os.path.join(photos_directory, 'photos_gps_data.csv')
+    output_file = os.path.join(results_directory, 'photos_gps_data.csv')
     previous_files = set()
     if os.path.exists(output_file):
         try:
@@ -357,8 +360,16 @@ def main():
         # Create list of unique locations
         unique_locations = create_unique_locations_list(photos_df)
         
-        # Save list of unique locations to CSV file
-        unique_locations_file = os.path.join(photos_directory, 'unique_locations.csv')
+        # Save list of unique locations to CSV file (merge with existing)
+        unique_locations_file = os.path.join(results_directory, 'unique_locations.csv')
+        if os.path.exists(unique_locations_file):
+            try:
+                df_old_locs = pd.read_csv(unique_locations_file, encoding='utf-8')
+                unique_locations = pd.concat([df_old_locs, unique_locations], ignore_index=True) \
+                    .drop_duplicates(subset=['city', 'state', 'country']) \
+                    .sort_values(by=['country', 'state', 'city'])
+            except Exception as e:
+                print(f"Warning: Could not read previous unique locations: {e}")
         unique_locations.to_csv(unique_locations_file, index=False, encoding='utf-8')
         print(f"\nList of unique locations saved to file: {unique_locations_file}")
         
@@ -376,8 +387,16 @@ def main():
         print(f"\nCaching statistics:")
         print(f"Total unique coordinates in cache: {len(location_cache)}")
     
-    # Save results to CSV file
-    output_file = os.path.join(photos_directory, 'photos_gps_data.csv')
+    # Save results to CSV file (merge with existing, new data takes precedence for duplicate paths)
+    output_file = os.path.join(results_directory, 'photos_gps_data.csv')
+    if os.path.exists(output_file):
+        try:
+            df_old = pd.read_csv(output_file, encoding='utf-8')
+            # Keep old rows for files no longer in scan, add/update new rows
+            df_old_only = df_old[~df_old['file_path'].isin(photos_df['file_path'].astype(str))]
+            photos_df = pd.concat([df_old_only, photos_df], ignore_index=True)
+        except Exception as e:
+            print(f"Warning: Could not merge with previous results: {e}")
     photos_df.to_csv(output_file, index=False, encoding='utf-8')
     print(f"\nData saved to file: {output_file}")
  
